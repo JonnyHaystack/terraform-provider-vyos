@@ -131,7 +131,7 @@ func (vc *VyosConfig) ApiRequest(ctx context.Context, endpoint string, payload a
 	return vc.apiClient.Request(ctx, endpoint, payload)
 }
 
-func getConfigFromPath(configTree map[string]interface{}, path_components []string) (rval interface{}, err error) {
+func getConfigFromPath(configTree map[string]any, path_components []string) (rval any, err error) {
 	var ok bool
 
 	if len(path_components) == 0 {
@@ -142,7 +142,7 @@ func getConfigFromPath(configTree map[string]interface{}, path_components []stri
 		return nil, nil
 	} else if len(path_components) == 1 { // we've reached the final path component
 		return rval, nil
-	} else if configTree, ok = rval.(map[string]interface{}); !ok {
+	} else if configTree, ok = rval.(map[string]any); !ok {
 		return nil, fmt.Errorf("malformed configTree at %#v", rval)
 	} else { // 1+ more path components
 		return getConfigFromPath(configTree, path_components[1:])

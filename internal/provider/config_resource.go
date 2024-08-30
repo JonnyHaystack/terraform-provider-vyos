@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 
 	"github.com/TGNThump/terraform-provider-vyos/internal/vyos"
@@ -14,6 +15,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 )
 
@@ -64,6 +66,12 @@ func (r *ConfigResource) Schema(ctx context.Context, request resource.SchemaRequ
 			"value": schema.StringAttribute{
 				MarkdownDescription: "JSON configuration for the path",
 				Optional:            true,
+				PlanModifiers: []planmodifier.String{
+					NormalizeValue(),
+				},
+				// PlanModifiers: []planmodifier.Dynamic{
+				// 	NormalizeValue(),
+				// },
 			},
 		},
 	}
@@ -121,7 +129,7 @@ func (r *ConfigResource) Create(ctx context.Context, req resource.CreateRequest,
 		}
 	}
 
-	var jsonValue interface{}
+	var jsonValue any
 	err = json.Unmarshal([]byte(data.Value.ValueString()), &jsonValue)
 
 	if err != nil {
@@ -214,7 +222,7 @@ func (r *ConfigResource) Update(ctx context.Context, req resource.UpdateRequest,
 	})
 
 	{
-		var value interface{}
+		var value any
 		err := json.Unmarshal([]byte(plan.Value.ValueString()), &value)
 
 		if err != nil {
@@ -283,4 +291,125 @@ func (r *ConfigResource) Delete(ctx context.Context, req resource.DeleteRequest,
 func (r *ConfigResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), req.ID)...)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("path"), req.ID)...)
+}
+
+type normalizeValueModifier struct{}
+
+func (m normalizeValueModifier) Description(_ context.Context) string {
+	return "Normalize all VyOS config values passed in."
+}
+
+func (m normalizeValueModifier) MarkdownDescription(_ context.Context) string {
+	return "Normalize all VyOS config values passed in."
+}
+
+func (m normalizeValueModifier) PlanModifyString(_ context.Context, req planmodifier.StringRequest, resp *planmodifier.StringResponse) {
+	// Do nothing if there is no state value.
+	if req.StateValue.IsNull() {
+		return
+	}
+
+	// Do nothing if there is a known planned value.
+	if !req.PlanValue.IsUnknown() {
+		return
+	}
+
+	// Do nothing if there is an unknown configuration value, otherwise interpolation gets messed up.
+	if req.ConfigValue.IsUnknown() {
+		return
+	}
+
+	var valueObj any
+
+	// Deserialize json value, normalize, and serialize and pass back in response
+	json.Unmarshal([]byte(req.PlanValue.ValueString()), &valueObj)
+	valueObj = normalizeValue(valueObj)
+	newValue, _ := json.Marshal(valueObj)
+	newRespValue := basetypes.NewStringValue(string(newValue))
+
+	resp.PlanValue = newRespValue
+}
+
+func NormalizeValue() planmodifier.String {
+	return normalizeValueModifier{}
+}
+
+// TODO: Change the argument type to dynamic and use the below
+
+/*
+type normalizeValueModifier struct{}
+
+func (m normalizeValueModifier) Description(_ context.Context) string {
+	return "Normalize all VyOS config values passed in."
+}
+
+func (m normalizeValueModifier) MarkdownDescription(_ context.Context) string {
+	return "Normalize all VyOS config values passed in."
+}
+
+func (m normalizeValueModifier) PlanModifyDynamic(_ context.Context, req planmodifier.DynamicRequest, resp *planmodifier.DynamicResponse) {
+	// Do nothing if there is no state value.
+	if req.StateValue.IsNull() {
+		return
+	}
+
+	// Do nothing if there is a known planned value.
+	if !req.PlanValue.IsUnknown() {
+		return
+	}
+
+	// Do nothing if there is an unknown configuration value, otherwise interpolation gets messed up.
+	if req.ConfigValue.IsUnknown() {
+		return
+	}
+
+	resp.PlanValue = req.StateValue
+}
+
+func NormalizeValue() planmodifier.Dynamic {
+	return normalizeValueModifier{}
+}
+*/
+
+func normalizeList(list []any) any {
+	newList := []any{}
+	for _, value := range list {
+		if value != nil {
+			newList = append(newList, normalizeValue(value))
+		}
+	}
+
+	// Convert single-element lists to scalar value
+	if len(newList) == 1 {
+		return newList[0]
+	}
+	return newList
+}
+
+func normalizeObject(obj map[string]any) map[string]any {
+	newObj := make(map[string]any)
+
+	for key, value := range obj {
+		if value != nil {
+			(newObj)[key] = normalizeValue(value)
+		}
+	}
+
+	return newObj
+}
+
+func normalizeValue(value any) any {
+	switch v := value.(type) {
+	case nil:
+		return make(map[string]any)
+	case []any:
+		fmt.Println("Normalizing list: ", v)
+		return normalizeList(v)
+	case map[string]any:
+		fmt.Println("Normalizing map: ", v)
+		return normalizeObject(v)
+	default:
+		fmt.Println("Unhandled type: ", reflect.TypeOf(v))
+	}
+	return value
 }
