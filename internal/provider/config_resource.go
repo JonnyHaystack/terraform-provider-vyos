@@ -303,17 +303,7 @@ func (m normalizeValueModifier) MarkdownDescription(_ context.Context) string {
 	return "Normalize all VyOS config values passed in."
 }
 
-func (m normalizeValueModifier) PlanModifyString(_ context.Context, req planmodifier.StringRequest, resp *planmodifier.StringResponse) {
-	// Do nothing if there is no state value.
-	if req.StateValue.IsNull() {
-		return
-	}
-
-	// Do nothing if there is a known planned value.
-	if !req.PlanValue.IsUnknown() {
-		return
-	}
-
+func (m normalizeValueModifier) PlanModifyString(ctx context.Context, req planmodifier.StringRequest, resp *planmodifier.StringResponse) {
 	// Do nothing if there is an unknown configuration value, otherwise interpolation gets messed up.
 	if req.ConfigValue.IsUnknown() {
 		return
@@ -328,6 +318,7 @@ func (m normalizeValueModifier) PlanModifyString(_ context.Context, req planmodi
 	newRespValue := basetypes.NewStringValue(string(newValue))
 
 	resp.PlanValue = newRespValue
+	tflog.Error(ctx, resp.PlanValue.String())
 }
 
 func NormalizeValue() planmodifier.String {
