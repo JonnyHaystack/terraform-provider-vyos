@@ -9,13 +9,13 @@ import (
 
 	"github.com/TGNThump/terraform-provider-vyos/internal/vyos"
 	"github.com/foltik/vyos-client-go/client"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 )
 
@@ -35,9 +35,9 @@ type ConfigResource struct {
 
 // ConfigResourceModel describes the resource data model.
 type ConfigResourceModel struct {
-	Path  types.String `tfsdk:"path"`
-	Value types.String `tfsdk:"value"`
-	Id    types.String `tfsdk:"id"`
+	Path  types.String  `tfsdk:"path"`
+	Value types.Dynamic `tfsdk:"value"`
+	Id    types.String  `tfsdk:"id"`
 }
 
 func (r *ConfigResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -63,15 +63,15 @@ func (r *ConfigResource) Schema(ctx context.Context, request resource.SchemaRequ
 					stringplanmodifier.RequiresReplace(),
 				},
 			},
-			"value": schema.StringAttribute{
+			"value": schema.DynamicAttribute{
 				MarkdownDescription: "JSON configuration for the path",
 				Optional:            true,
-				PlanModifiers: []planmodifier.String{
-					NormalizeValue(),
-				},
-				// PlanModifiers: []planmodifier.Dynamic{
+				// PlanModifiers: []planmodifier.String{
 				// 	NormalizeValue(),
 				// },
+				PlanModifiers: []planmodifier.Dynamic{
+					NormalizeValue(),
+				},
 			},
 		},
 	}
@@ -129,17 +129,9 @@ func (r *ConfigResource) Create(ctx context.Context, req resource.CreateRequest,
 		}
 	}
 
-	var jsonValue any
-	err = json.Unmarshal([]byte(data.Value.ValueString()), &jsonValue)
+	tflog.Info(ctx, "Setting path "+data.Path.ValueString()+" to value "+data.Value.UnderlyingValue().String())
 
-	if err != nil {
-		resp.Diagnostics.AddError("No", err.Error())
-		return
-	}
-
-	tflog.Info(ctx, "Setting path "+data.Path.ValueString()+" to value "+data.Value.ValueString())
-
-	err = r.vyosConfig.Set(ctx, data.Path.ValueString(), jsonValue)
+	err = r.vyosConfig.Set(ctx, data.Path.ValueString(), data.Value.UnderlyingValue())
 	if err != nil {
 		resp.Diagnostics.AddError("No", err.Error())
 		return
@@ -147,7 +139,7 @@ func (r *ConfigResource) Create(ctx context.Context, req resource.CreateRequest,
 
 	data.Id = types.StringValue(data.Path.ValueString())
 
-	tflog.Info(ctx, "Set path "+data.Path.ValueString()+" to value "+data.Value.ValueString())
+	tflog.Info(ctx, "Set path "+data.Path.ValueString()+" to value "+data.Value.UnderlyingValue().String())
 
 	// Save data into Terraform state
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
@@ -163,7 +155,7 @@ func (r *ConfigResource) Read(ctx context.Context, req resource.ReadRequest, res
 		return
 	}
 
-	tflog.Info(ctx, "Reading path "+data.Path.ValueString())
+	tflog.Error(ctx, "Reading path "+data.Path.ValueString())
 
 	components := strings.Split(data.Path.ValueString(), " ")
 	parentPath := strings.Join(components[0:len(components)-1], " ")
@@ -187,15 +179,38 @@ func (r *ConfigResource) Read(ctx context.Context, req resource.ReadRequest, res
 		return
 	}
 
-	jsonValue, err := json.Marshal(config)
-	if err != nil {
-		resp.Diagnostics.AddError("No", err.Error())
-		return
+	tflog.Error(ctx, "TEST")
+	jsonString, err := json.MarshalIndent(config, "", "  ")
+	tflog.Error(ctx, string(jsonString))
+
+	// Based on https://developer.hashicorp.com/terraform/plugin/framework/handling-data/types/dynamic#setting-values
+	var value attr.Value
+	// tftypes.NewValue()
+	switch v := config.(type) {
+	case bool:
+		// value = tftypes.NewValue(tftypes.Bool, v)
+		value = types.BoolValue(v)
+	case string:
+		value = types.StringValue(v)
+	case int32:
+		value = types.Int32Value(v)
+	case int64:
+		value = types.Int64Value(v)
+	case float32:
+		value = types.Float32Value(v)
+	case float64:
+		value = types.Float64Value(v)
+	case []any:
+		value, _ = types.ListValueFrom(ctx, types.DynamicType, v)
+	case map[string]any:
+		value, _ = types.MapValueFrom(ctx, types.DynamicType, v)
+	// default:
+	// 	value = v.(attr.Value)
+	// 	value = types.MapValueMust(attr.Value, v.(map[string]attr.Value))
 	}
+	data.Value = types.DynamicValue(value)
 
-	data.Value = types.StringValue(string(jsonValue[:]))
-
-	tflog.Info(ctx, "Read path "+data.Path.ValueString()+" with value "+data.Value.ValueString())
+	tflog.Error(ctx, "Read path "+data.Path.ValueString()+" with value "+data.Value.UnderlyingValue().String())
 
 	// Save updated data into Terraform state
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
@@ -212,7 +227,7 @@ func (r *ConfigResource) Update(ctx context.Context, req resource.UpdateRequest,
 		return
 	}
 
-	tflog.Info(ctx, "Updating path "+plan.Path.ValueString()+" to value "+plan.Value.ValueString())
+	tflog.Info(ctx, "Updating path "+plan.Path.ValueString()+" to value "+plan.Value.UnderlyingValue().String())
 
 	var payload []map[string]any
 
@@ -222,15 +237,7 @@ func (r *ConfigResource) Update(ctx context.Context, req resource.UpdateRequest,
 	})
 
 	{
-		var value any
-		err := json.Unmarshal([]byte(plan.Value.ValueString()), &value)
-
-		if err != nil {
-			resp.Diagnostics.AddError("No", err.Error())
-			return
-		}
-
-		flat, err := client.Flatten(value)
+		flat, err := client.Flatten(plan.Value.UnderlyingValue())
 		if err != nil {
 			resp.Diagnostics.AddError("No", err.Error())
 			return
@@ -261,7 +268,7 @@ func (r *ConfigResource) Update(ctx context.Context, req resource.UpdateRequest,
 		return
 	}
 
-	tflog.Info(ctx, "Updated path "+plan.Path.ValueString()+" to value "+plan.Value.ValueString())
+	tflog.Info(ctx, "Updated path "+plan.Path.ValueString()+" to value "+plan.Value.UnderlyingValue().String())
 
 	// Save updated plan into Terraform state
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
@@ -293,43 +300,35 @@ func (r *ConfigResource) ImportState(ctx context.Context, req resource.ImportSta
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("path"), req.ID)...)
 }
 
+func getAttributeType(value any) attr.Type {
+	switch v := value.(type) {
+	case bool:
+		return types.BoolType
+	case string:
+		return types.StringType
+	case int32:
+		return types.NumberType
+	case int64:
+		return types.Int64Type
+	case float32:
+		return types.Float32Type
+	case float64:
+		return types.Float64Type
+	case []any:
+		return types.ListType.WithElementType(types.ListType{}, getAttributeType(v))
+	case map[string]any:
+		return types.MapType.WithElementType(types.MapType{}, types.DynamicType)
+	}
+	return types.StringType
+}
+
+
 type normalizeValueModifier struct{}
 
-func (m normalizeValueModifier) Description(_ context.Context) string {
-	return "Normalize all VyOS config values passed in."
-}
-
-func (m normalizeValueModifier) MarkdownDescription(_ context.Context) string {
-	return "Normalize all VyOS config values passed in."
-}
-
-func (m normalizeValueModifier) PlanModifyString(ctx context.Context, req planmodifier.StringRequest, resp *planmodifier.StringResponse) {
-	// Do nothing if there is an unknown configuration value, otherwise interpolation gets messed up.
-	if req.ConfigValue.IsUnknown() {
-		return
-	}
-
-	var valueObj any
-
-	// Deserialize json value, normalize, and serialize and pass back in response
-	json.Unmarshal([]byte(req.PlanValue.ValueString()), &valueObj)
-	valueObj = normalizeValue(valueObj)
-	newValue, _ := json.Marshal(valueObj)
-	newRespValue := basetypes.NewStringValue(string(newValue))
-
-	resp.PlanValue = newRespValue
-	tflog.Error(ctx, resp.PlanValue.String())
-}
-
-func NormalizeValue() planmodifier.String {
+func NormalizeValue() planmodifier.Dynamic {
 	return normalizeValueModifier{}
 }
 
-// TODO: Change the argument type to dynamic and use the below
-
-/*
-type normalizeValueModifier struct{}
-
 func (m normalizeValueModifier) Description(_ context.Context) string {
 	return "Normalize all VyOS config values passed in."
 }
@@ -338,14 +337,14 @@ func (m normalizeValueModifier) MarkdownDescription(_ context.Context) string {
 	return "Normalize all VyOS config values passed in."
 }
 
-func (m normalizeValueModifier) PlanModifyDynamic(_ context.Context, req planmodifier.DynamicRequest, resp *planmodifier.DynamicResponse) {
+func (m normalizeValueModifier) PlanModifyDynamic(ctx context.Context, req planmodifier.DynamicRequest, resp *planmodifier.DynamicResponse) {
 	// Do nothing if there is no state value.
 	if req.StateValue.IsNull() {
 		return
 	}
 
-	// Do nothing if there is a known planned value.
-	if !req.PlanValue.IsUnknown() {
+	// Do nothing if there is an unknown configuration value, otherwise interpolation gets messed up.
+	if req.ConfigValue.IsUnknown() {
 		return
 	}
 
@@ -354,19 +353,16 @@ func (m normalizeValueModifier) PlanModifyDynamic(_ context.Context, req planmod
 		return
 	}
 
-	resp.PlanValue = req.StateValue
+	// Normalize value and pass back in response
+	resp.PlanValue = normalizeValue(ctx, req.PlanValue.UnderlyingValue()).(types.Dynamic)
+	tflog.Error(ctx, resp.PlanValue.String())
 }
 
-func NormalizeValue() planmodifier.Dynamic {
-	return normalizeValueModifier{}
-}
-*/
-
-func normalizeList(list []any) any {
+func normalizeList(ctx context.Context, list []any) any {
 	newList := []any{}
 	for _, value := range list {
 		if value != nil {
-			newList = append(newList, normalizeValue(value))
+			newList = append(newList, normalizeValue(ctx, value))
 		}
 	}
 
@@ -377,28 +373,28 @@ func normalizeList(list []any) any {
 	return newList
 }
 
-func normalizeObject(obj map[string]any) map[string]any {
+func normalizeObject(ctx context.Context, obj map[string]any) map[string]any {
 	newObj := make(map[string]any)
 
 	for key, value := range obj {
 		if value != nil {
-			(newObj)[key] = normalizeValue(value)
+			(newObj)[key] = normalizeValue(ctx, value)
 		}
 	}
 
 	return newObj
 }
 
-func normalizeValue(value any) any {
+func normalizeValue(ctx context.Context, value any) any {
 	switch v := value.(type) {
 	case nil:
 		return make(map[string]any)
 	case []any:
 		fmt.Println("Normalizing list: ", v)
-		return normalizeList(v)
+		return normalizeList(ctx, v)
 	case map[string]any:
 		fmt.Println("Normalizing map: ", v)
-		return normalizeObject(v)
+		return normalizeObject(ctx, v)
 	default:
 		fmt.Println("Unhandled type: ", reflect.TypeOf(v))
 	}
